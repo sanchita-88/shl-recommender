@@ -23,8 +23,8 @@ import re
 from pathlib import Path
 
 import numpy as np
-import faiss
-from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -203,11 +203,8 @@ class SHLAgent:
         self.catalog = self._load_catalog(catalog_path)
         logger.info("Loaded %d assessments from catalog", len(self.catalog))
 
-        self._embed = SentenceTransformer(
-            os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
-        )
-        self._index = self._build_index()
-        logger.info("FAISS index ready")
+        self._vectorizer, self._tfidf_matrix = self._build_index()
+        logger.info("TF-IDF index ready (%d docs)", len(self.catalog))
 
         self._llm = _build_llm()
         logger.info("LLM ready (provider=%s)", os.getenv("LLM_PROVIDER", "gemini"))
@@ -253,9 +250,9 @@ class SHLAgent:
             })
         return items
 
-    # ── Vector index ──────────────────────────────────────────────────────────
+    # ── TF-IDF index (lightweight — no PyTorch) ──────────────────────────────
 
-    def _build_index(self) -> faiss.IndexFlatIP:
+    def _build_index(self):
         texts = []
         for item in self.catalog:
             text = " ".join(filter(None, [
@@ -266,25 +263,23 @@ class SHLAgent:
             ]))
             texts.append(text)
 
-        if not texts:
-            return faiss.IndexFlatIP(384)
-
-        vecs = self._embed.encode(
-            texts, normalize_embeddings=True, show_progress_bar=False
-        ).astype(np.float32)
-        idx = faiss.IndexFlatIP(vecs.shape[1])
-        idx.add(vecs)
-        return idx
+        vectorizer = TfidfVectorizer(
+            analyzer="word",
+            ngram_range=(1, 2),
+            max_features=15000,
+            sublinear_tf=True,
+        )
+        matrix = vectorizer.fit_transform(texts) if texts else None
+        return vectorizer, matrix
 
     def _search(self, query: str, k: int = 20) -> list[dict]:
-        k = min(k, len(self.catalog))
-        if k == 0:
+        if self._tfidf_matrix is None or not self.catalog:
             return []
-        vec = self._embed.encode(
-            [query], normalize_embeddings=True, show_progress_bar=False
-        ).astype(np.float32)
-        _, idxs = self._index.search(vec, k)
-        return [self.catalog[i] for i in idxs[0] if 0 <= i < len(self.catalog)]
+        k = min(k, len(self.catalog))
+        q_vec = self._vectorizer.transform([query])
+        scores = cosine_similarity(q_vec, self._tfidf_matrix)[0]
+        top_k = scores.argsort()[-k:][::-1]
+        return [self.catalog[i] for i in top_k if scores[i] > 0]
 
     # ── LLM interaction ───────────────────────────────────────────────────────
 
