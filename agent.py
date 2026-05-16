@@ -64,9 +64,9 @@ def _to_bool(val) -> bool:
 def _build_llm():
     provider = os.getenv("LLM_PROVIDER", "gemini").lower()
     if provider == "gemini":
-        import google.generativeai as genai  # type: ignore
-        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-        return _GeminiClient(genai)
+        from google import genai  # type: ignore  (new google-genai SDK)
+        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+        return _GeminiClient(client)
     from openai import OpenAI  # type: ignore
     return OpenAI(
         api_key=os.environ["OPENAI_API_KEY"],
@@ -75,16 +75,16 @@ def _build_llm():
 
 
 class _GeminiClient:
-    def __init__(self, genai_mod):
-        self._g = genai_mod
-        self._model = genai_mod.GenerativeModel(
-            os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-        )
+    def __init__(self, client):
+        self._client = client
+        self._model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
     def complete(self, prompt: str) -> str:
-        resp = self._model.generate_content(
-            prompt,
-            generation_config=self._g.GenerationConfig(
+        from google.genai import types  # type: ignore
+        resp = self._client.models.generate_content(
+            model=self._model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
                 temperature=0.1,
                 max_output_tokens=1200,
             ),
